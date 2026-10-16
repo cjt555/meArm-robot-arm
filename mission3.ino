@@ -515,6 +515,18 @@ void keyAction(int k)
  * 引脚为 INPUT_PULLUP，所以按下是低电平 */
 void keyScan()
 {
+  /* ★ 上电保护期：启动后 500ms 内不响应按键。
+   *
+   * 为什么要加：打开串口监视器时，USB 转串口芯片会拉 DTR 让主控复位。
+   * 复位瞬间各引脚电平不稳定，加上外部接线（按键、外设板）的瞬态，
+   * D3（按键2＝录制）可能被瞬时拉低，被误判成"按下了录制键"。
+   * 消抖逻辑无法区分"真实的按下"和"复位瞬间的低电平"，
+   * 因为这两者都满足"稳定低电平超过 25ms"。
+   *
+   * 500ms 足够覆盖复位后的电平建立过程，而人手动按键不会这么快，
+   * 所以不会影响正常操作。 */
+  if(millis() < 500) return;
+
   static uint8_t raw[4]    = { HIGH, HIGH, HIGH, HIGH };
   static uint8_t stable[4] = { HIGH, HIGH, HIGH, HIGH };
   static unsigned long changeMs[4];
@@ -772,6 +784,21 @@ void serialPoll()
       cmdOverflow = false;
       continue;
     }
+
+    /* ★ 字符白名单：只接受指令真正会用到的字符，其余一律丢弃。
+     *
+     * 不加这一层的话，RX 线上任何一个杂散字节都会被当成指令执行。
+     * 曾经出现过"打开串口监视器就自动开始录制"的现象，原因就是
+     * 一个噪声字节恰好是 'R'（0x52），而 'R' 正是"录制起止"指令。
+     *
+     * 白名单覆盖：大写字母（指令）、小写字母（稍后转大写）、数字（角度）、
+     * 逗号与空格（分隔符）、等号（x=90 写法）。
+     * 其余字节（噪声、串口连接瞬间的杂散数据、外部板吐的乱码）直接扔掉，
+     * 既不进缓冲也不影响已收内容。 */
+    bool valid = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                 (c >= '0' && c <= '9') ||
+                 c == ',' || c == ' ' || c == '=';
+    if(!valid) continue;
 
     if(cmdLen < CMD_BUF - 1) cmdBuf[cmdLen++] = c;
     else                     cmdOverflow = true;
